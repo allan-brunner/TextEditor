@@ -5,6 +5,8 @@ export class InputController {
         this.lastClick = 0;
         this.nbClick = 0;
         this.draggingText = false;
+        this.draggingRename = false;
+        this.resizingConsole = false;
 
         this._bindEvents();
     }
@@ -19,6 +21,12 @@ export class InputController {
         this.canvas.addEventListener("click", (e) => this.onMouseClick(e));
         this.canvas.addEventListener("mousemove", (e) => this.onMouseMove(e));
         this.canvas.addEventListener("wheel", (e) => this.onWheel(e), { passive: false });
+        window.addEventListener("mouseup", () => {
+            if (this.resizingConsole) {
+                this.resizingConsole = false;
+                this.editor.render();
+            }
+        });
         this.canvas.addEventListener("mouseleave", () => {
             this.editor.mousePos = null;
             this.editor.render();
@@ -26,18 +34,22 @@ export class InputController {
     }
 
     onMouseDown(e) {
-        e.preventDefault();
         const rect = this.canvas.getBoundingClientRect();
         const x = e.clientX - rect.left;
         const y = e.clientY - rect.top;
         const shift = e.shiftKey;
 
-        const hit = this.editor.renderer.hitTestTopBar(x, y);
+        const hit = this.editor.renderer.hitTestUI(x, y, this.editor.consoleOpen);
         if (hit) {
             this.draggingText = false;
             this.draggingRename = false;
+            this.resizingConsole = false;
 
-            if (hit.type === "tab") {
+            if (hit.type === "resize_console") {
+                this.resizingConsole = true;
+                this.editor.render();
+                return;
+            } else if (hit.type === "tab") {
                 if (this.editor.renamingTabId === hit.id && this.editor.renameDoc) {
                     this.draggingRename = true;
                     const rDoc = this.editor.renameDoc;
@@ -63,6 +75,10 @@ export class InputController {
                     this.editor.createNewTab();
                 } else if (hit.type === "run") {
                     this.editor.runActiveDocument();
+                } else if (hit.type === "toggle_console" || hit.type === "close_console") {
+                    this.editor.toggleConsole();
+                } else if (hit.type === "clear_console") {
+                    this.editor.clearConsole();
                 }
             }
             return;
@@ -83,19 +99,19 @@ export class InputController {
         doc.setCursor(pos.line, pos.col);
         doc.selectToCursor(shift, line, col);
 
-        this.editor.renderer.ensureVisibleCursor(doc);
+        this.editor.renderer.ensureVisibleCursor(doc, this.editor.consoleOpen);
         this.editor.render();
     }
 
     onMouseClick(e) {
-        e.preventDefault();
         const rect = this.canvas.getBoundingClientRect();
         const x = e.clientX - rect.left;
         const y = e.clientY - rect.top;
         const now = Date.now();
+        const renderer = this.editor.renderer;
 
-        if (y <= this.editor.renderer.topBarHeight) {
-            const hit = this.editor.renderer.hitTestTopBar(x, y);
+        if (y <= renderer.topBarHeight) {
+            const hit = renderer.hitTestUI(x, y, this.editor.consoleOpen);
             if (hit && hit.type === "tab") {
                 if (now - this.lastClick < 350) {
                     if (this.editor.renamingTabId === hit.id && this.editor.renameDoc) {
@@ -110,6 +126,11 @@ export class InputController {
                 }
                 this.lastClick = now;
             }
+            return;
+        }
+
+        const canvasH = this.canvas.height / renderer.dpr;
+        if (this.editor.consoleOpen && y >= canvasH - renderer.consoleHeight) {
             return;
         }
 
@@ -136,7 +157,21 @@ export class InputController {
         const y = e.clientY - rect.top;
         this.editor.mousePos = { x, y };
 
-        if (e.buttons === 1 && this.draggingRename && this.editor.renameDoc) {
+        if (e.buttons === 1 && this.resizingConsole) {
+            e.preventDefault();
+            const renderer = this.editor.renderer;
+            const canvasH = this.canvas.height / renderer.dpr;
+            renderer.setConsoleHeight(canvasH - y);
+
+            const lineH = renderer.consoleLineHeight;
+            const visibleH = renderer.consoleHeight - renderer.consoleHeaderHeight - 16;
+            const maxScroll = Math.max(0, this.editor.consoleLogs.length * lineH - visibleH);
+            this.editor.consoleScrollY = Math.min(this.editor.consoleScrollY, maxScroll);
+
+            renderer.ensureVisibleCursor(this.editor.activeDoc, this.editor.consoleOpen);
+            this.editor.render();
+            return;
+        } else if (e.buttons === 1 && this.draggingRename && this.editor.renameDoc) {
             e.preventDefault();
             const rDoc = this.editor.renameDoc;
             const col = this.editor.renderer.posFromRenameInput(x, rDoc);
@@ -164,6 +199,49 @@ export class InputController {
         doc.selectToCursor(true, line, col);
 
         this.editor.renderer.ensureVisibleCursor(doc);
+        this.editor.render();
+    }
+
+    onWheel(e) {
+        e.preventDefault();
+        const rect = this.canvas.getBoundingClientRect();
+        const y = e.clientY - rect.top;
+        const ctrl = e.ctrlKey || e.metaKey;
+        const renderer = this.editor.renderer;
+        const canvasH = this.canvas.height / renderer.dpr;
+
+        if (this.editor.consoleOpen && y >= canvasH - renderer.consoleHeight) {
+            if (ctrl) {
+                renderer.zoomConsole(e.deltaY);
+            } else {
+                const lineH = renderer.consoleLineHeight;
+                const visibleH = renderer.consoleHeight - renderer.consoleHeaderHeight - 16;
+                const maxScroll = Math.max(0, this.editor.consoleLogs.length * lineH - visibleH);
+                this.editor.consoleScrollY = Math.max(
+                    0,
+                    Math.min(maxScroll, this.editor.consoleScrollY + e.deltaY)
+                );
+            }
+            const lineH = renderer.consoleLineHeight;
+            const visibleH = renderer.consoleHeight - renderer.consoleHeaderHeight - 16;
+            const maxScroll = Math.max(0, this.editor.consoleLogs.length * lineH - visibleH);
+            this.editor.consoleScrollY = Math.max(0, Math.min(maxScroll, this.editor.consoleScrollY));
+
+            this.editor.render();
+            return;
+        }
+
+        const doc = this.editor.activeDoc;
+        if (!ctrl) {
+            const maxScrollY = Math.max(0, (doc.getNbLines() - 1) * renderer.lineHeight);
+            doc.scrollY = Math.max(0, Math.min(maxScrollY, doc.scrollY + e.deltaY));
+            if (e.deltaX) {
+                doc.scrollX = Math.max(0, doc.scrollX + e.deltaX);
+            }
+        } else {
+            renderer.zoom(e.deltaY);
+        }
+
         this.editor.render();
     }
 
@@ -299,6 +377,10 @@ export class InputController {
                 doc.selectAll();
                 this.editor.resetCaretBlink();
                 this.editor.render();
+                break;
+            case "j":
+                e.preventDefault();
+                this.editor.toggleConsole();
                 break;
             case "z":
                 e.preventDefault();

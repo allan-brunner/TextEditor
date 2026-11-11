@@ -22,6 +22,13 @@ export class Editor {
         this.saveTimer = null;
         this.mousePos = null;
 
+        // Console state
+        this.consoleOpen = false;
+        this.consoleLogs = [
+            { type: "info", text: "IDE Console ready. Press Ctrl+J or click '>_ Console' to toggle." }
+        ];
+        this.consoleScrollY = 0;
+
         this.openDocument("welcome.txt");
 
         this.input = new InputController(this, canvas);
@@ -162,9 +169,40 @@ export class Editor {
         }, 300);
     }
 
+    toggleConsole(forceState = null) {
+        this.consoleOpen = forceState !== null ? forceState : !this.consoleOpen;
+        this.renderer.ensureVisibleCursor(this.activeDoc, this.consoleOpen);
+        this.render();
+    }
+
+    clearConsole() {
+        this.consoleLogs = [];
+        this.consoleScrollY = 0;
+        this.render();
+    }
+
+    logToConsole(text, type = "info") {
+        const lines = String(text).split("\n");
+        for (const line of lines) {
+            this.consoleLogs.push({ type, text: line });
+        }
+        const lineH = this.renderer.consoleLineHeight;
+        const visibleH = this.renderer.consoleHeight - this.renderer.consoleHeaderHeight - 16;
+        this.consoleScrollY = Math.max(0, this.consoleLogs.length * lineH - visibleH);
+        this.render();
+    }
+
     runActiveDocument() {
-        const code = this.activeDoc.getText();
-        console.log(`[IDE Runner] Executing "${this.activeDoc.id}" (lang: ${this.currentLang})...\n`, code);
+        this.toggleConsole(true);
+        const file = this.activeDoc.id;
+        const lang = this.currentLang || "TXT";
+        const time = new Date().toLocaleTimeString();
+
+        this.logToConsole(`[${time}] Running "${file}"...`, "info");
+        this.logToConsole(
+            `Error: Language "${lang}" is not supported by the interpreter yet.`,
+            "error"
+        );
     }
 
     copy(e) {
@@ -241,7 +279,11 @@ export class Editor {
             this.mousePos,
             {
                 renamingTabId: this.renamingTabId,
-                renameDoc: this.renameDoc
+                renameDoc: this.renameDoc,
+                consoleOpen: this.consoleOpen,
+                consoleLogs: this.consoleLogs,
+                consoleScrollY: this.consoleScrollY,
+                resizingConsole: Boolean(this.input?.resizingConsole)
             }
         );
     }

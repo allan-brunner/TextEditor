@@ -4,7 +4,11 @@ export class Renderer {
         this.ctx = canvas.getContext("2d");
 
         this.dpr = 1;
-        this.topBarHeight = 36; // Height reserved for the IDE Top Bar
+        this.topBarHeight = 36;
+        this.consoleHeight = 190;
+        this.consoleHeaderHeight = 30;
+        this.consoleFontSize = 14;
+        this.consoleLineHeight = 20;
         this.fontSize = 16;
         this.lineHeight = 20;
         this.paddingHeight = 16;
@@ -32,6 +36,19 @@ export class Renderer {
         this.measure();
     }
 
+    zoomConsole(delta) {
+        const step = Math.max(-1, Math.min(1, delta));
+        this.consoleFontSize = Math.max(10, Math.min(48, this.consoleFontSize + 2 * -step));
+        this.consoleLineHeight = this.consoleFontSize + 6;
+    }
+
+    setConsoleHeight(newHeight) {
+        const h = this.canvas.height / this.dpr;
+        const minH = this.consoleHeaderHeight + 40;
+        const maxH = Math.max(minH, h - this.topBarHeight - 80);
+        this.consoleHeight = Math.max(minH, Math.min(maxH, newHeight));
+    }
+
     measure() {
         const ctx = this.ctx;
         ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
@@ -44,8 +61,9 @@ export class Renderer {
         this.paddingWidth = 16 + this.log10NbLines * this.charWidth + 8;
     }
 
-    getLinesPerPage() {
-        const h = this.canvas.height / this.dpr - this.topBarHeight;
+    getLinesPerPage(consoleOpen = false) {
+        const bottomSpace = consoleOpen ? this.consoleHeight : 0;
+        const h = this.canvas.height / this.dpr - this.topBarHeight - bottomSpace;
         return Math.max(1, Math.floor((h - 2 * this.paddingHeight) / this.lineHeight));
     }
 
@@ -75,21 +93,27 @@ export class Renderer {
         return Math.max(0, Math.min(maxCol, Math.round(relX / charW)));
     }
 
-    hitTestTopBar(x, y) {
-        if (y > this.topBarHeight) return null;
-        // Iterate in reverse so close buttons inside tabs match before the tab itself
+    hitTestUI(x, y, consoleOpen = false) {
         for (let i = this.uiHitboxes.length - 1; i >= 0; i--) {
             const box = this.uiHitboxes[i];
             if (x >= box.x && x <= box.x + box.w && y >= box.y && y <= box.y + box.h) {
                 return box;
             }
         }
-        return { type: "topbar_empty" };
+        if (y <= this.topBarHeight) {
+            return { type: "topbar_empty" };
+        }
+        const h = this.canvas.height / this.dpr;
+        if (consoleOpen && y >= h - this.consoleHeight) {
+            return { type: "console_body" };
+        }
+        return null;
     }
 
-    ensureVisibleCursor(doc) {
+    ensureVisibleCursor(doc, consoleOpen = false) {
         const viewW = this.canvas.width / this.dpr;
-        const viewH = this.canvas.height / this.dpr - this.topBarHeight;
+        const bottomSpace = consoleOpen ? this.consoleHeight : 0;
+        const viewH = this.canvas.height / this.dpr - this.topBarHeight - bottomSpace;
 
         this.adjustPaddingWidth(doc.getNbLines());
 
@@ -122,7 +146,8 @@ export class Renderer {
         const w = this.canvas.width / this.dpr;
         const h = this.canvas.height / this.dpr;
         const editorTop = this.topBarHeight;
-        const editorH = Math.max(0, h - editorTop);
+        const bottomPanelH = uiState.consoleOpen ? this.consoleHeight : 0;
+        const editorH = Math.max(0, h - editorTop - bottomPanelH);
         const nbLines = doc.getNbLines();
 
         this.adjustPaddingWidth(nbLines);
@@ -200,10 +225,10 @@ export class Renderer {
         }
 
         // Caret
-        if (caretVisible && !uiState.renamingTabId) {
+        if (caretVisible) {
             const cx = this.paddingWidth + doc.cursor.col * this.charWidth - doc.scrollX;
             const cy = editorTop + this.paddingHeight + doc.cursor.line * this.lineHeight - 2 - doc.scrollY;
-            if (cx >= this.paddingWidth - 2 && cx <= w + 2 && cy >= editorTop - this.lineHeight && cy <= h) {
+            if (cx >= this.paddingWidth - 2 && cx <= w + 2 && cy >= editorTop - this.lineHeight && cy <= editorTop + editorH) {
                 ctx.fillStyle = theme.get("caret") ?? "#ffffff";
                 ctx.fillRect(cx, cy, 2, this.lineHeight);
             }
@@ -227,9 +252,14 @@ export class Renderer {
         // Draw IDE Top Bar
         this._drawTopBar(w, doc, documents, theme, mousePos, caretVisible, uiState);
 
+        // Draw Bottom Console Panel (if open)
+        if (uiState.consoleOpen) {
+            this._drawConsole(w, h, theme, mousePos, uiState);
+        }
+
         // Draw Custom Mouse Cursor on top of everything
         if (mousePos) {
-            this._drawMouseCursor(mousePos, theme);
+            this._drawMouseCursor(mousePos, theme, uiState);
         }
     }
 
@@ -405,6 +435,39 @@ export class Renderer {
             h
         });
 
+        // '>_ Console' Toggle Button
+        const consoleBtnW = 94;
+        const consoleBtnH = 24;
+        const consoleBtnX = w - 76 - 12 - consoleBtnW - 8;
+        const consoleBtnY = (h - consoleBtnH) / 2;
+        const consoleHovered =
+            mousePos &&
+            mousePos.x >= consoleBtnX &&
+            mousePos.x <= consoleBtnX + consoleBtnW &&
+            mousePos.y >= consoleBtnY &&
+            mousePos.y <= consoleBtnY + consoleBtnH;
+
+        ctx.fillStyle = uiState.consoleOpen || consoleHovered
+            ? (theme.get("tabHoverBg") ?? "#161f33")
+            : "transparent";
+        ctx.fillRect(consoleBtnX, consoleBtnY, consoleBtnW, consoleBtnH);
+
+        ctx.strokeStyle = uiState.consoleOpen
+            ? (theme.get("accent") ?? "#3b82f6")
+            : (theme.get("border") ?? "rgba(255, 255, 255, 0.2)");
+        ctx.strokeRect(consoleBtnX, consoleBtnY, consoleBtnW, consoleBtnH);
+
+        ctx.fillStyle = theme.get("foreground") ?? "#ffffff";
+        ctx.fillText(">_ Console", consoleBtnX + 10, h / 2 + 1);
+
+        this.uiHitboxes.push({
+            type: "toggle_console",
+            x: consoleBtnX,
+            y: consoleBtnY,
+            w: consoleBtnW,
+            h: consoleBtnH
+        });
+
         // '▶ Run' Button on the right side
         const runW = 76;
         const runH = 24;
@@ -436,15 +499,158 @@ export class Renderer {
         ctx.restore();
     }
 
-    _drawMouseCursor(mousePos, theme) {
+    _drawConsole(w, h, theme, mousePos, uiState) {
+        const ctx = this.ctx;
+        const top = h - this.consoleHeight;
+        const headerH = this.consoleHeaderHeight;
+        const logs = uiState.consoleLogs ?? [];
+        const scrollY = uiState.consoleScrollY ?? 0;
+
+        ctx.save();
+
+        // Console Panel Background
+        ctx.fillStyle = theme.get("topbarBg") ?? "#060911";
+        ctx.fillRect(0, top, w, this.consoleHeight);
+
+        // Console Header Bar & Borders
+        ctx.fillStyle = theme.get("tabActiveBg") ?? "#0b0f19";
+        ctx.fillRect(0, top, w, headerH);
+
+        const resizeHovered =
+            uiState.resizingConsole ||
+            (mousePos && mousePos.y >= top - 4 && mousePos.y <= top + 4);
+
+        this.uiHitboxes.push({
+            type: "resize_console",
+            x: 0,
+            y: top - 4,
+            w,
+            h: 8
+        });
+
+        // Highlight top border when hovered or dragging
+        ctx.fillStyle = resizeHovered
+            ? (theme.get("accent") ?? "#3b82f6")
+            : (theme.get("border") ?? "rgba(255, 255, 255, 0.12)");
+        ctx.fillRect(0, top - (resizeHovered ? 1 : 0), w, resizeHovered ? 2 : 1);
+
+        ctx.fillStyle = theme.get("border") ?? "rgba(255, 255, 255, 0.12)";
+        ctx.fillRect(0, top + headerH - 1, w, 1);
+
+        ctx.font = `12px ${this.fontFamily}`;
+        ctx.textBaseline = "middle";
+        ctx.fillStyle = theme.get("foreground") ?? "#ffffff";
+        ctx.fillText("CONSOLE / OUTPUT", 12, top + headerH / 2 + 1);
+
+        // Accent underline under title
+        ctx.fillStyle = theme.get("accent") ?? "#3b82f6";
+        ctx.fillRect(12, top + headerH - 2, 115, 2);
+
+        // 'Clear' Button
+        const clearW = 52;
+        const clearH = 20;
+        const clearX = w - 68 - clearW;
+        const clearY = top + (headerH - clearH) / 2;
+        const clearHovered =
+            mousePos &&
+            mousePos.x >= clearX &&
+            mousePos.x <= clearX + clearW &&
+            mousePos.y >= clearY &&
+            mousePos.y <= clearY + clearH;
+
+        if (clearHovered) {
+            ctx.fillStyle = theme.get("tabHoverBg") ?? "#161f33";
+            ctx.fillRect(clearX, clearY, clearW, clearH);
+        }
+        ctx.fillStyle = theme.get("gutter") ?? "rgba(255, 255, 255, 0.6)";
+        ctx.fillText("Clear", clearX + 8, top + headerH / 2 + 1);
+
+        this.uiHitboxes.push({
+            type: "clear_console",
+            x: clearX,
+            y: clearY,
+            w: clearW,
+            h: clearH
+        });
+
+        // '×' Close Console Button
+        const closeSize = 20;
+        const closeX = w - closeSize - 12;
+        const closeY = top + (headerH - closeSize) / 2;
+        const closeHovered =
+            mousePos &&
+            mousePos.x >= closeX &&
+            mousePos.x <= closeX + closeSize &&
+            mousePos.y >= closeY &&
+            mousePos.y <= closeY + closeSize;
+
+        if (closeHovered) {
+            ctx.fillStyle = "rgba(240, 113, 120, 0.25)";
+            ctx.fillRect(closeX, closeY, closeSize, closeSize);
+            ctx.fillStyle = "#f07178";
+        } else {
+            ctx.fillStyle = theme.get("gutter") ?? "rgba(255, 255, 255, 0.6)";
+        }
+        ctx.fillText("×", closeX + 6, top + headerH / 2 + 1);
+
+        this.uiHitboxes.push({
+            type: "close_console",
+            x: closeX,
+            y: closeY,
+            w: closeSize,
+            h: closeSize
+        });
+
+        const bodyTop = top + headerH;
+        const bodyH = this.consoleHeight - headerH;
+
+        ctx.beginPath();
+        ctx.rect(0, bodyTop, w, bodyH);
+        ctx.clip();
+
+        ctx.font = `${this.consoleFontSize}px ${this.fontFamily}`;
+        ctx.textBaseline = "top";
+
+        const lineH = this.consoleLineHeight;
+        const startIdx = Math.max(0, Math.floor(scrollY / lineH));
+        const endIdx = Math.min(logs.length, startIdx + Math.ceil(bodyH / lineH) + 1);
+
+        for (let i = startIdx; i < endIdx; i++) {
+            const entry = logs[i];
+            const y = bodyTop + 8 + i * lineH - scrollY;
+
+            if (entry.type === "error") {
+                ctx.fillStyle = theme.get("special") ?? "#f07178";
+            } else if (entry.type === "warn") {
+                ctx.fillStyle = theme.get("literal") ?? "#ffcb6b";
+            } else if (entry.type === "success") {
+                ctx.fillStyle = theme.get("string") ?? "#a3be8c";
+            } else {
+                ctx.fillStyle = theme.get("foreground") ?? "#e6edf3";
+            }
+
+            ctx.fillText(`> ${entry.text}`, 12, y);
+        }
+
+        ctx.restore();
+    }
+
+    _drawMouseCursor(mousePos, theme, uiState = {}) {
         const ctx = this.ctx;
         const { x, y } = mousePos;
+        const h = this.canvas.height / this.dpr;
+        const consoleOpen = Boolean(uiState.consoleOpen);
+        const editorBottom = consoleOpen ? h - this.consoleHeight : h;
         const color = theme.get("caret") ?? "#ffffff";
 
         ctx.save();
         ctx.strokeStyle = color;
         ctx.fillStyle = color;
         ctx.lineWidth = 1.5;
+
+        const onResizeBorder =
+            consoleOpen &&
+            (uiState.resizingConsole || (y >= editorBottom - 4 && y <= editorBottom + 4));
 
         const overRenameBox =
             this.renameBoxMeta &&
@@ -453,7 +659,26 @@ export class Renderer {
             y >= this.renameBoxMeta.boxY &&
             y <= this.renameBoxMeta.boxY + this.renameBoxMeta.boxH;
 
-        if ((y > this.topBarHeight && x >= this.paddingWidth) || overRenameBox) {
+        if (onResizeBorder) {
+            // Draw vertical resize cursor (ns-resize ↕)
+            ctx.beginPath();
+            // Horizontal divider bar
+            ctx.moveTo(x - 6, y);
+            ctx.lineTo(x + 6, y);
+            // Vertical shaft
+            ctx.moveTo(x, y - 8);
+            ctx.lineTo(x, y + 8);
+            // Up arrow head
+            ctx.moveTo(x - 3, y - 5);
+            ctx.lineTo(x, y - 8);
+            ctx.lineTo(x + 3, y - 5);
+            // Down arrow head
+            ctx.moveTo(x - 3, y + 5);
+            ctx.lineTo(x, y + 8);
+            ctx.lineTo(x + 3, y + 5);
+            ctx.stroke();
+        } else if ((y > this.topBarHeight && y < editorBottom - 4 && x >= this.paddingWidth) || overRenameBox) {
+            // Draw I-Beam cursor
             const halfH = overRenameBox ? 7 : Math.round(this.lineHeight * 0.45);
             const serifW = 3;
 
@@ -466,7 +691,7 @@ export class Renderer {
             ctx.lineTo(x + serifW, y + halfH);
             ctx.stroke();
         } else {
-            // Draw Pointer Arrow over the Top Bar and Gutter
+            // Draw Pointer Arrow
             ctx.beginPath();
             ctx.moveTo(x, y);
             ctx.lineTo(x, y + 14);
