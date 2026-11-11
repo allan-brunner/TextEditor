@@ -32,12 +32,40 @@ export async function loadDocument(id = "default") {
     });
 }
 
+export async function loadAllDocuments() {
+    const db = await openDb();
+    return new Promise((resolve, reject) => {
+        const tx = db.transaction(STORE, "readonly");
+        const store = tx.objectStore(STORE);
+        const req = store.getAll();
+
+        req.onsuccess = () => resolve(req.result ?? []);
+        req.onerror = () => reject(req.error);
+
+        tx.oncomplete = () => db.close();
+    });
+}
+
 export async function saveDocument(doc) {
     const db = await openDb();
     return new Promise((resolve, reject) => {
         const tx = db.transaction(STORE, "readwrite");
         const store = tx.objectStore(STORE);
         const req = store.put(doc);
+
+        req.onsuccess = () => resolve();
+        req.onerror = () => reject(req.error);
+
+        tx.oncomplete = () => db.close();
+    });
+}
+
+export async function deleteDocument(id) {
+    const db = await openDb();
+    return new Promise((resolve, reject) => {
+        const tx = db.transaction(STORE, "readwrite");
+        const store = tx.objectStore(STORE);
+        const req = store.delete(id);
 
         req.onsuccess = () => resolve();
         req.onerror = () => reject(req.error);

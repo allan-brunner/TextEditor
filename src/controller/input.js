@@ -4,6 +4,7 @@ export class InputController {
         this.canvas = canvas;
         this.lastClick = 0;
         this.nbClick = 0;
+        this.draggingText = false;
 
         this._bindEvents();
     }
@@ -25,7 +26,54 @@ export class InputController {
     }
 
     onMouseDown(e) {
+        e.preventDefault();
+        const rect = this.canvas.getBoundingClientRect();
+        const x = e.clientX - rect.left;
+        const y = e.clientY - rect.top;
         const shift = e.shiftKey;
+
+        const hit = this.editor.renderer.hitTestTopBar(x, y);
+        if (hit) {
+            this.draggingText = false;
+            this.draggingRename = false;
+
+            if (hit.type === "tab") {
+                if (this.editor.renamingTabId === hit.id && this.editor.renameDoc) {
+                    this.draggingRename = true;
+                    const rDoc = this.editor.renameDoc;
+                    const col = this.editor.renderer.posFromRenameInput(x, rDoc);
+                    const prevCol = rDoc.cursor.col;
+                    rDoc.setCursor(0, col);
+                    rDoc.selectToCursor(shift, 0, prevCol);
+                    this.editor.resetCaretBlink();
+                    this.editor.render();
+                    return;
+                }
+                if (this.editor.renamingTabId && this.editor.renamingTabId !== hit.id) {
+                    this.editor.finishRenameTab(true);
+                }
+                this.editor.switchDocument(hit.id);
+            } else {
+                if (this.editor.renamingTabId) {
+                    this.editor.finishRenameTab(true);
+                }
+                if (hit.type === "close_tab") {
+                    this.editor.closeDocument(hit.id);
+                } else if (hit.type === "new_tab") {
+                    this.editor.createNewTab();
+                } else if (hit.type === "run") {
+                    this.editor.runActiveDocument();
+                }
+            }
+            return;
+        }
+
+        if (this.editor.renamingTabId) {
+            this.editor.finishRenameTab(true);
+        }
+
+        this.draggingText = true;
+        this.draggingRename = false;
         const doc = this.editor.activeDoc;
 
         this.editor.resetCaretBlink();
@@ -40,9 +88,32 @@ export class InputController {
     }
 
     onMouseClick(e) {
+        e.preventDefault();
+        const rect = this.canvas.getBoundingClientRect();
+        const x = e.clientX - rect.left;
+        const y = e.clientY - rect.top;
         const now = Date.now();
-        const doc = this.editor.activeDoc;
 
+        if (y <= this.editor.renderer.topBarHeight) {
+            const hit = this.editor.renderer.hitTestTopBar(x, y);
+            if (hit && hit.type === "tab") {
+                if (now - this.lastClick < 350) {
+                    if (this.editor.renamingTabId === hit.id && this.editor.renameDoc) {
+                        this.editor.renameDoc.selectWordAt(0, this.editor.renameDoc.cursor.col);
+                        this.editor.render();
+                    } else {
+                        this.editor.startRenameTab(hit.id);
+                    }
+                    this.nbClick = 0;
+                } else {
+                    this.nbClick = 1;
+                }
+                this.lastClick = now;
+            }
+            return;
+        }
+
+        const doc = this.editor.activeDoc;
         if (now - this.lastClick < 250) {
             this.nbClick++;
             if (this.nbClick === 2) {
@@ -61,12 +132,23 @@ export class InputController {
 
     onMouseMove(e) {
         const rect = this.canvas.getBoundingClientRect();
-        this.editor.mousePos = {
-            x: e.clientX - rect.left,
-            y: e.clientY - rect.top
-        };
+        const x = e.clientX - rect.left;
+        const y = e.clientY - rect.top;
+        this.editor.mousePos = { x, y };
 
-        if (e.buttons !== 1) {
+        if (e.buttons === 1 && this.draggingRename && this.editor.renameDoc) {
+            e.preventDefault();
+            const rDoc = this.editor.renameDoc;
+            const col = this.editor.renderer.posFromRenameInput(x, rDoc);
+            const prevCol = rDoc.cursor.col;
+            rDoc.setCursor(0, col);
+            rDoc.selectToCursor(true, 0, prevCol);
+            this.editor.resetCaretBlink();
+            this.editor.render();
+            return;
+        }
+
+        if (e.buttons !== 1 || !this.draggingText) {
             this.editor.render();
             return;
         }
@@ -85,31 +167,30 @@ export class InputController {
         this.editor.render();
     }
 
-    onWheel(e) {
-        e.preventDefault();
-        const ctrl = e.ctrlKey || e.metaKey;
-        const doc = this.editor.activeDoc;
-        const renderer = this.editor.renderer;
-
-        if (!ctrl) {
-            const maxScrollY = Math.max(0, (doc.getNbLines() - 1) * renderer.lineHeight);
-            doc.scrollY = Math.max(0, Math.min(maxScrollY, doc.scrollY + e.deltaY));
-            if (e.deltaX) {
-                doc.scrollX = Math.max(0, doc.scrollX + e.deltaX);
-            }
-        } else {
-            renderer.zoom(e.deltaY);
-        }
-
-        this.editor.render();
-    }
-
     onKeyDown(e) {
         if (e.altKey) return;
 
+        const isRenaming = Boolean(this.editor.renamingTabId);
+        if (isRenaming) {
+            if (e.key === "Enter") {
+                e.preventDefault();
+                this.editor.finishRenameTab(true);
+                return;
+            }
+            if (e.key === "Escape") {
+                e.preventDefault();
+                this.editor.finishRenameTab(false);
+                return;
+            }
+            if (["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Tab"].includes(e.key)) {
+                e.preventDefault();
+                return;
+            }
+        }
+
         const ctrl = e.ctrlKey || e.metaKey;
         const shift = e.shiftKey;
-        const doc = this.editor.activeDoc;
+        const doc = this.editor.targetDoc;
         let textChanged = false;
         let editLine = doc.cursor.line;
 
@@ -198,16 +279,19 @@ export class InputController {
         }
 
         this.editor.resetCaretBlink();
-        if (textChanged) {
-            this.editor.onDocumentChanged(editLine);
+        if (!isRenaming) {
+            if (textChanged) {
+                this.editor.onDocumentChanged(editLine);
+            }
+            this.editor.renderer.ensureVisibleCursor(doc);
         }
-        this.editor.renderer.ensureVisibleCursor(doc);
         this.editor.render();
     }
 
     _handleShortcut(e) {
         const key = e.key.toLowerCase();
-        const doc = this.editor.activeDoc;
+        const doc = this.editor.targetDoc;
+        const isRenaming = Boolean(this.editor.renamingTabId);
 
         switch (key) {
             case "a":
@@ -219,23 +303,22 @@ export class InputController {
             case "z":
                 e.preventDefault();
                 if (e.shiftKey) {
-                    if (doc.redo()) this.editor.onDocumentChanged(0);
+                    if (doc.redo() && !isRenaming) this.editor.onDocumentChanged(0);
                 } else {
-                    if (doc.undo()) this.editor.onDocumentChanged(0);
+                    if (doc.undo() && !isRenaming) this.editor.onDocumentChanged(0);
                 }
                 this.editor.resetCaretBlink();
-                this.editor.renderer.ensureVisibleCursor(doc);
+                if (!isRenaming) this.editor.renderer.ensureVisibleCursor(doc);
                 this.editor.render();
                 break;
             case "y":
                 e.preventDefault();
-                if (doc.redo()) this.editor.onDocumentChanged(0);
+                if (doc.redo() && !isRenaming) this.editor.onDocumentChanged(0);
                 this.editor.resetCaretBlink();
-                this.editor.renderer.ensureVisibleCursor(doc);
+                if (!isRenaming) this.editor.renderer.ensureVisibleCursor(doc);
                 this.editor.render();
                 break;
             default:
-                // Let native Ctrl+C / Ctrl+V / Ctrl+X events fire
                 break;
         }
     }

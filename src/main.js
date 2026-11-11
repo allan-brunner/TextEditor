@@ -1,5 +1,5 @@
 import { Editor } from "./editor.js";
-import { loadDocument } from "./storage.js";
+import { loadAllDocuments, deleteDocument, saveDocument } from "./storage.js";
 
 const canvas = document.getElementById("editor-canvas");
 const editor = new Editor(canvas);
@@ -14,9 +14,15 @@ function resize() {
 }
 
 window.addEventListener("load", async () => {
-    const saved = await loadDocument("default");
-    if (saved?.text) {
-        editor.openDocument("default", saved.text);
+    const savedDocs = await loadAllDocuments();
+    const validDocs = savedDocs.filter(d => d && d.text && d.text.trim().length > 0);
+
+    if (validDocs.length > 0) {
+        editor.documents.clear();
+        for (const doc of validDocs) {
+            const id = doc.id ?? "welcome.txt";
+            editor.openDocument(id, doc.text);
+        }
     }
 });
 

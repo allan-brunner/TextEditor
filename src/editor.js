@@ -3,25 +3,26 @@ import { Renderer } from "./view/renderer.js";
 import { Theme } from "./view/theme.js";
 import { InputController } from "./controller/input.js";
 import { initHighlighter } from "./highlighters/index.js";
-import { saveDocument } from "./storage.js";
+import { saveDocument, deleteDocument } from "./storage.js";
 
 export class Editor {
     constructor(canvas) {
         this.canvas = canvas;
         this.renderer = new Renderer(canvas);
 
-        // Multi-document / tab registry
         this.documents = new Map();
         this.activeDoc = null;
+
+        // Tab renaming state
+        this.renamingTabId = null;
+        this.renameDoc = null;
 
         this.caretVisible = true;
         this.skipCaretChange = false;
         this.saveTimer = null;
-
         this.mousePos = null;
 
-        // Open default document
-        this.openDocument("default");
+        this.openDocument("welcome.txt");
 
         this.input = new InputController(this, canvas);
     }
@@ -41,9 +42,95 @@ export class Editor {
     switchDocument(id) {
         const doc = this.documents.get(id);
         if (!doc) return;
+        if (this.renamingTabId && this.renamingTabId !== id) {
+            this.finishRenameTab(true);
+        }
         this.activeDoc = doc;
         this.syncMetadataAndStates(0);
         this.render();
+    }
+
+    createNewTab() {
+        if (this.renamingTabId) this.finishRenameTab(true);
+        let index = 1;
+        while (this.documents.has(`script_${index}.js`)) {
+            index++;
+        }
+        const id = `script_${index}.js`;
+        const starter = `// ${id}\n\n`;
+        this.openDocument(id, starter);
+        this.scheduleSave();
+    }
+
+    get targetDoc() {
+        return this.renamingTabId ? this.renameDoc : this.activeDoc;
+    }
+
+    startRenameTab(id) {
+        if (!this.documents.has(id)) return;
+        this.switchDocument(id);
+        this.renamingTabId = id;
+        this.renameDoc = new TextDocument("__rename__", id);
+
+        const dotIdx = id.lastIndexOf(".");
+        const endCol = dotIdx > 0 ? dotIdx : id.length;
+        this.renameDoc.selection = {
+            start: { line: 0, col: 0 },
+            end: { line: 0, col: endCol }
+        };
+        this.renameDoc.inSelection = endCol > 0;
+        this.renameDoc.setCursor(0, endCol);
+
+        this.resetCaretBlink();
+        this.render();
+    }
+
+    async finishRenameTab(commit = true) {
+        if (!this.renamingTabId) return;
+        const oldId = this.renamingTabId;
+        const newId = this.renameDoc ? this.renameDoc.lineAt(0).content.trim() : "";
+
+        this.renamingTabId = null;
+        this.renameDoc = null;
+
+        if (!commit || !newId || newId === oldId || this.documents.has(newId)) {
+            this.render();
+            return;
+        }
+
+        const updatedMap = new Map();
+        for (const [key, doc] of this.documents) {
+            if (key === oldId) {
+                doc.id = newId;
+                updatedMap.set(newId, doc);
+            } else {
+                updatedMap.set(key, doc);
+            }
+        }
+        this.documents = updatedMap;
+
+        this.syncMetadataAndStates(0);
+        this.render();
+
+        await deleteDocument(oldId);
+        this.scheduleSave();
+    }
+
+    async closeDocument(id) {
+        if (this.renamingTabId === id) {
+            this.renamingTabId = null;
+            this.renameDoc = null;
+        }
+        if (this.documents.size <= 1 || !this.documents.has(id)) return;
+        this.documents.delete(id);
+        await deleteDocument(id);
+
+        if (this.activeDoc.id === id) {
+            const firstRemainingId = this.documents.keys().next().value;
+            this.switchDocument(firstRemainingId);
+        } else {
+            this.render();
+        }
     }
 
     syncMetadataAndStates(startLine = 0) {
@@ -51,7 +138,7 @@ export class Editor {
         if (this.currentLang !== lang || this.highlighter?.doc !== this.activeDoc) {
             this.currentLang = lang;
             this.highlighter = initHighlighter(lang, this.activeDoc);
-            startLine = 0; // Full state pass when language or document changes
+            startLine = 0;
         }
         this.theme = Theme.get(theme);
         this.highlighter.updateStates(startLine);
@@ -75,43 +162,55 @@ export class Editor {
         }, 300);
     }
 
-    // --- Clipboard Actions ---
+    runActiveDocument() {
+        const code = this.activeDoc.getText();
+        console.log(`[IDE Runner] Executing "${this.activeDoc.id}" (lang: ${this.currentLang})...\n`, code);
+    }
 
     copy(e) {
-        const text = this.activeDoc.getSelectionText();
+        const doc = this.targetDoc;
+        const text = doc.getSelectionText();
         if (!text) return;
         e.preventDefault();
         e.clipboardData.setData("text/plain", text);
     }
 
     cut(e) {
-        if (!this.activeDoc.inSelection) return;
+        const doc = this.targetDoc;
+        if (!doc.inSelection) return;
         this.copy(e);
-        const startLine = this.activeDoc.getOrderedSelection().start.line;
-        this.activeDoc.history.record(this.activeDoc.getStateSnapshot(), false);
-        if (this.activeDoc.deleteSelection()) {
+        const startLine = doc.getOrderedSelection().start.line;
+        doc.history.record(doc.getStateSnapshot(), false);
+        if (doc.deleteSelection()) {
             this.resetCaretBlink();
-            this.onDocumentChanged(startLine);
-            this.renderer.ensureVisibleCursor(this.activeDoc);
+            if (!this.renamingTabId) {
+                this.onDocumentChanged(startLine);
+                this.renderer.ensureVisibleCursor(doc);
+            }
             this.render();
         }
     }
 
     paste(e) {
-        const text = e.clipboardData?.getData("text/plain");
-        if (!text) return;
+        const rawText = e.clipboardData?.getData("text/plain");
+        if (!rawText) return;
         e.preventDefault();
-        const startLine = this.activeDoc.inSelection
-            ? this.activeDoc.getOrderedSelection().start.line
-            : this.activeDoc.cursor.line;
-        this.activeDoc.insertText(text);
+
+        const doc = this.targetDoc;
+        const text = this.renamingTabId ? rawText.replace(/[\r\n]/g, "") : rawText;
+
+        const startLine = doc.inSelection
+            ? doc.getOrderedSelection().start.line
+            : doc.cursor.line;
+        doc.insertText(text);
         this.resetCaretBlink();
-        this.onDocumentChanged(startLine);
-        this.renderer.ensureVisibleCursor(this.activeDoc);
+
+        if (!this.renamingTabId) {
+            this.onDocumentChanged(startLine);
+            this.renderer.ensureVisibleCursor(doc);
+        }
         this.render();
     }
-
-    // --- Rendering & Caret Loop ---
 
     setDpr(dpr) {
         this.renderer.setDpr(dpr);
@@ -135,10 +234,15 @@ export class Editor {
         if (!this.activeDoc) return;
         this.renderer.render(
             this.activeDoc,
+            this.documents,
             this.highlighter,
             this.theme,
             this.caretVisible,
-            this.mousePos
+            this.mousePos,
+            {
+                renamingTabId: this.renamingTabId,
+                renameDoc: this.renameDoc
+            }
         );
     }
 }

@@ -1,7 +1,7 @@
 import { HistoryManager } from "./history.js";
 
 export class TextDocument {
-    constructor(id = "default", initialText = null) {
+    constructor(id = "welcome.txt", initialText = null) {
         this.id = id;
         this.blocLength = 256;
 
@@ -29,59 +29,30 @@ export class TextDocument {
 
     initDefaultText() {
         const defaultLines = [
-            "lang: txt, theme: midnight",
+            "theme: midnight",
             "",
-            "Welcome.",
-            "This is a custom text editor, built from scratch.",
-            "No framework, no magic, just a canvas, code and curiosity.",
+            "Welcome to your Custom IDE.",
+            "This editor is built from scratch on an HTML5 Canvas.",
             "",
-            "Let's take a quick tour.",
-            "--- BASIC TYPING ---",
-            "   Just start typing. Printable characters work as expected.",
-            "   Enter creates a new line.",
-            "   Tab inserts indentation.",
-            "   Shift + Tab removes indentation.",
+            "--- TABS & FILE EXTENSIONS ---",
+            "   Click '+' in the top bar to create a new file.",
+            "   Double-click any tab to rename it (Enter to confirm, Escape to cancel).",
+            "   Syntax highlighting is automatic based on the file extension:",
+            "     • .c / .h   -> C89 Highlighter",
+            "     • .js       -> JavaScript Highlighter",
+            "     • .txt      -> Plain Text",
             "",
-            "--- MOVING AROUND ---",
-            "   Arrow keys move the caret.",
-            "   Ctrl + Arrow jumps by word.",
-            "   Home End jump to line start / end.",
-            "   Ctrl + Home / End jump to the start / end of the document.",
-            "   Page Up / Page Down scroll vertically.",
-            "   Mouse wheel also scroll vertically.",
+            "--- THEMES ---",
+            "   You can optionally set 'theme: midnight', 'theme: nord', or",
+            "   'theme: solarized_dark' on the first line.",
             "",
-            "--- SELECTION ---",
-            "   Hold Shift while moving to select text.",
-            "   Mouse click + drag also works.",
-            "   Mouse double click selects a word.",
-            "   Mouse triple click selects the whole line.",
-            "   Ctrl + A selects everything.",
+            "--- SHORTCUTS ---",
+            "   Ctrl + Z / Y          Undo / Redo",
+            "   Ctrl + C / X / V      Copy / Cut / Paste",
+            "   Ctrl + A              Select All",
+            "   Ctrl + Mouse Wheel    Zoom In / Out",
             "",
-            "--- EDITING ---",
-            "   Backspace / Delete remove characters.",
-            "   Ctrl + Backspace / delete delete by words.",
-            "   Ctrl + Z / Ctrl + Y undo and redo changes.",
-            "",
-            "--- CLIPBOARD ---",
-            "   Ctrl + C copies the current selection.",
-            "   Ctrl + X cuts it.",
-            "   Ctrl + V pastes plain text.",
-            "",
-            "--- METADATA LINE ---",
-            "   First line is interpreted as the metadata line.",
-            "   Lang metadata changes the syntax highlighter language",
-            "   Available : (txt, C, JS)",
-            "   theme metadata changes the theme",
-            "   Available : (midnight, nord, solarized_dark)",
-            "",
-            "--- EXTRAS ---",
-            "   Ctrl + mouse wheel zooms in / out.",
-            "   Line numbers are enabled.",
-            "   Text selection is highlighted.",
-            "   The document is saved locally (deleting everything + refresh resets to this text).",
-            "   Syntax highlighting is enabled (try C code).",
-            "",
-            "Have fun experimenting."
+            "Have fun building your language!"
         ];
         this.setText(defaultLines.join("\n"));
     }
@@ -123,15 +94,25 @@ export class TextDocument {
     }
 
     getMetadata() {
+        let lang = "TXT";
+        const dotIdx = this.id.lastIndexOf(".");
+        if (dotIdx !== -1 && dotIdx < this.id.length - 1) {
+            const ext = this.id.slice(dotIdx + 1).toUpperCase();
+            if (ext === "C" || ext === "H") {
+                lang = "C";
+            } else if (ext === "JS" || ext === "MJS") {
+                lang = "JS";
+            } else {
+                lang = ext;
+            }
+        }
+
         const firstLine = this.lineAt(0)?.content ?? "";
-        let lang = "DEFAULT";
-        let theme = "DEFAULT";
-
-        const langMatch = firstLine.match(/lang:\s*(\w+)/i);
-        if (langMatch) lang = langMatch[1].toUpperCase();
-
+        let theme = "MIDNIGHT";
         const themeMatch = firstLine.match(/theme:\s*(\w+)/i);
-        if (themeMatch) theme = themeMatch[1].toUpperCase();
+        if (themeMatch) {
+            theme = themeMatch[1].toUpperCase();
+        }
 
         return { lang, theme };
     }

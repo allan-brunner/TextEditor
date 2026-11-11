@@ -4,6 +4,7 @@ export class Renderer {
         this.ctx = canvas.getContext("2d");
 
         this.dpr = 1;
+        this.topBarHeight = 36; // Height reserved for the IDE Top Bar
         this.fontSize = 16;
         this.lineHeight = 20;
         this.paddingHeight = 16;
@@ -11,6 +12,10 @@ export class Renderer {
         this.log10NbLines = 1;
         this.fontFamily =
             "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace";
+
+        // Stores interactive top bar hitboxes from the latest frame
+        this.uiHitboxes = [];
+        this.renameBoxMeta = null;
 
         this.measure();
     }
@@ -40,7 +45,7 @@ export class Renderer {
     }
 
     getLinesPerPage() {
-        const h = this.canvas.height / this.dpr;
+        const h = this.canvas.height / this.dpr - this.topBarHeight;
         return Math.max(1, Math.floor((h - 2 * this.paddingHeight) / this.lineHeight));
     }
 
@@ -52,7 +57,7 @@ export class Renderer {
         this.adjustPaddingWidth(doc.getNbLines());
 
         const contentX = x + doc.scrollX - this.paddingWidth;
-        const contentY = y + doc.scrollY - this.paddingHeight;
+        const contentY = y - this.topBarHeight + doc.scrollY - this.paddingHeight;
 
         const nbLines = doc.getNbLines();
         const line = Math.max(0, Math.min(nbLines - 1, Math.floor(contentY / this.lineHeight)));
@@ -62,9 +67,29 @@ export class Renderer {
         return { line, col };
     }
 
+    posFromRenameInput(mouseX, renameDoc) {
+        if (!this.renameBoxMeta || !renameDoc) return 0;
+        const { textX, charW } = this.renameBoxMeta;
+        const relX = mouseX - textX + renameDoc.scrollX;
+        const maxCol = renameDoc.lineAt(0).content.length;
+        return Math.max(0, Math.min(maxCol, Math.round(relX / charW)));
+    }
+
+    hitTestTopBar(x, y) {
+        if (y > this.topBarHeight) return null;
+        // Iterate in reverse so close buttons inside tabs match before the tab itself
+        for (let i = this.uiHitboxes.length - 1; i >= 0; i--) {
+            const box = this.uiHitboxes[i];
+            if (x >= box.x && x <= box.x + box.w && y >= box.y && y <= box.y + box.h) {
+                return box;
+            }
+        }
+        return { type: "topbar_empty" };
+    }
+
     ensureVisibleCursor(doc) {
         const viewW = this.canvas.width / this.dpr;
-        const viewH = this.canvas.height / this.dpr;
+        const viewH = this.canvas.height / this.dpr - this.topBarHeight;
 
         this.adjustPaddingWidth(doc.getNbLines());
 
@@ -90,35 +115,36 @@ export class Renderer {
         }
     }
 
-    render(doc, highlighter, theme, caretVisible, mousePos) {
+    render(doc, documents, highlighter, theme, caretVisible, mousePos = null, uiState = {}) {
         const ctx = this.ctx;
         ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
 
         const w = this.canvas.width / this.dpr;
         const h = this.canvas.height / this.dpr;
+        const editorTop = this.topBarHeight;
+        const editorH = Math.max(0, h - editorTop);
         const nbLines = doc.getNbLines();
 
         this.adjustPaddingWidth(nbLines);
 
-        // Background
+        // Editor Background
         ctx.clearRect(0, 0, w, h);
         ctx.fillStyle = theme.get("background") ?? "#0b0f19";
-        ctx.fillRect(0, 0, w, h);
+        ctx.fillRect(0, editorTop, w, editorH);
 
         ctx.font = `${this.fontSize}px ${this.fontFamily}`;
         ctx.textBaseline = "top";
 
-        // Use Math.floor so top partially scrolled line is still rendered
         const startLine = Math.max(0, Math.floor(doc.scrollY / this.lineHeight));
-        const visibleLines = Math.ceil((h - this.paddingHeight) / this.lineHeight) + 1;
+        const visibleLines = Math.ceil((editorH - this.paddingHeight) / this.lineHeight) + 1;
         const endLine = Math.min(nbLines, startLine + visibleLines);
 
         const { start: selStart, end: selEnd } = doc.getOrderedSelection();
 
-        // Clip code area so horizontally scrolled text/selection never overlaps the gutter
+        // Clip code area below Top Bar and right of Gutter
         ctx.save();
         ctx.beginPath();
-        ctx.rect(this.paddingWidth, 0, Math.max(0, w - this.paddingWidth), h);
+        ctx.rect(this.paddingWidth, editorTop, Math.max(0, w - this.paddingWidth), editorH);
         ctx.clip();
 
         const minChar = Math.max(0, Math.floor(doc.scrollX / this.charWidth));
@@ -126,16 +152,15 @@ export class Renderer {
 
         for (let i = startLine; i < endLine; i++) {
             const x = this.paddingWidth - doc.scrollX;
-            const y = this.paddingHeight + i * this.lineHeight - doc.scrollY;
+            const y = editorTop + this.paddingHeight + i * this.lineHeight - doc.scrollY;
             const lineContent = doc.lineAt(i).content;
 
-            // Selection highlight
             if (doc.inSelection && selStart.line <= i && selEnd.line >= i) {
                 const selColStart = selStart.line < i ? 0 : selStart.col;
                 const selColEnd = selEnd.line > i ? lineContent.length : selEnd.col;
                 const highlightWidth = Math.max(
                     (selColEnd - selColStart) * this.charWidth,
-                    selEnd.line > i ? this.charWidth * 0.5 : 0 // Show newline selection indicator
+                    selEnd.line > i ? this.charWidth * 0.5 : 0
                 );
 
                 ctx.fillStyle = theme.get("selection") ?? "rgba(255, 255, 255, 0.3)";
@@ -147,7 +172,6 @@ export class Renderer {
                 );
             }
 
-            // Syntax highlighted tokens
             const tokens = highlighter.tokenize(i);
             let pastNbChars = 0;
 
@@ -175,11 +199,11 @@ export class Renderer {
             }
         }
 
-        // Caret (drawn inside the code clip area so it also hides behind the gutter if scrolled off)
-        if (caretVisible) {
+        // Caret
+        if (caretVisible && !uiState.renamingTabId) {
             const cx = this.paddingWidth + doc.cursor.col * this.charWidth - doc.scrollX;
-            const cy = this.paddingHeight + doc.cursor.line * this.lineHeight - 2 - doc.scrollY;
-            if (cx >= this.paddingWidth - 2 && cx <= w + 2 && cy >= -this.lineHeight && cy <= h + this.lineHeight) {
+            const cy = editorTop + this.paddingHeight + doc.cursor.line * this.lineHeight - 2 - doc.scrollY;
+            if (cx >= this.paddingWidth - 2 && cx <= w + 2 && cy >= editorTop - this.lineHeight && cy <= h) {
                 ctx.fillStyle = theme.get("caret") ?? "#ffffff";
                 ctx.fillRect(cx, cy, 2, this.lineHeight);
             }
@@ -187,17 +211,229 @@ export class Renderer {
 
         ctx.restore();
 
-        // Draw Gutter (Line Numbers) outside the clip region
+        // Draw Gutter (clipped vertically below the top bar)
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(0, editorTop, this.paddingWidth, editorH);
+        ctx.clip();
         ctx.fillStyle = theme.get("gutter") ?? "rgba(255, 255, 255, 0.5)";
         for (let i = startLine; i < endLine; i++) {
-            const y = this.paddingHeight + i * this.lineHeight - doc.scrollY;
+            const y = editorTop + this.paddingHeight + i * this.lineHeight - doc.scrollY;
             const lineNumber = String(i + 1).padStart(this.log10NbLines, " ");
             ctx.fillText(lineNumber, 8, y);
         }
+        ctx.restore();
 
+        // Draw IDE Top Bar
+        this._drawTopBar(w, doc, documents, theme, mousePos, caretVisible, uiState);
+
+        // Draw Custom Mouse Cursor on top of everything
         if (mousePos) {
             this._drawMouseCursor(mousePos, theme);
         }
+    }
+
+    _drawTopBar(w, activeDoc, documents, theme, mousePos, caretVisible, uiState = {}) {
+        const ctx = this.ctx;
+        const h = this.topBarHeight;
+        const { renamingTabId, renameDoc } = uiState;
+        this.uiHitboxes = [];
+        this.renameBoxMeta = null;
+
+        ctx.save();
+        ctx.font = `13px ${this.fontFamily}`;
+        ctx.textBaseline = "middle";
+
+        ctx.fillStyle = theme.get("topbarBg") ?? "#060911";
+        ctx.fillRect(0, 0, w, h);
+
+        ctx.fillStyle = theme.get("border") ?? "rgba(255, 255, 255, 0.12)";
+        ctx.fillRect(0, h - 1, w, 1);
+
+        let tabX = 0;
+        const tabWidth = 150;
+        const canCloseTabs = documents.size > 1;
+
+        for (const [id] of documents) {
+            const isActive = id === activeDoc.id;
+            const isRenaming = id === renamingTabId;
+            const isHovered =
+                mousePos &&
+                mousePos.y <= h &&
+                mousePos.x >= tabX &&
+                mousePos.x <= tabX + tabWidth;
+
+            if (isActive) {
+                ctx.fillStyle = theme.get("tabActiveBg") ?? "#0b0f19";
+                ctx.fillRect(tabX, 0, tabWidth, h);
+                ctx.fillStyle = theme.get("accent") ?? "#3b82f6";
+                ctx.fillRect(tabX, 0, tabWidth, 2);
+            } else if (isHovered) {
+                ctx.fillStyle = theme.get("tabHoverBg") ?? "#161f33";
+                ctx.fillRect(tabX, 0, tabWidth, h - 1);
+            }
+
+            ctx.fillStyle = theme.get("border") ?? "rgba(255, 255, 255, 0.12)";
+            ctx.fillRect(tabX + tabWidth - 1, 0, 1, h);
+
+            if (isRenaming && renameDoc) {
+                const boxX = tabX + 8;
+                const boxY = 6;
+                const boxW = tabWidth - (canCloseTabs ? 36 : 16);
+                const boxH = h - 12;
+                const textX = boxX + 4;
+                const innerW = boxW - 8;
+
+                const charW = ctx.measureText("M").width;
+                this.renameBoxMeta = { boxX, boxY, boxW, boxH, textX, charW };
+
+                const caretPx = renameDoc.cursor.col * charW;
+                if (caretPx < renameDoc.scrollX) {
+                    renameDoc.scrollX = caretPx;
+                } else if (caretPx > renameDoc.scrollX + innerW - 2) {
+                    renameDoc.scrollX = Math.max(0, caretPx - innerW + 2);
+                }
+
+                // Input box background & border
+                ctx.fillStyle = theme.get("topbarBg") ?? "#060911";
+                ctx.fillRect(boxX, boxY, boxW, boxH);
+                ctx.strokeStyle = theme.get("accent") ?? "#3b82f6";
+                ctx.lineWidth = 1;
+                ctx.strokeRect(boxX, boxY, boxW, boxH);
+
+                // Clip contents to the input box
+                ctx.save();
+                ctx.beginPath();
+                ctx.rect(boxX + 1, boxY + 1, boxW - 2, boxH - 2);
+                ctx.clip();
+
+                const text = renameDoc.lineAt(0).content;
+
+                // Selection highlight inside the rename box
+                if (renameDoc.inSelection) {
+                    const { start, end } = renameDoc.getOrderedSelection();
+                    const selX = textX + start.col * charW - renameDoc.scrollX;
+                    const selW = (end.col - start.col) * charW;
+                    ctx.fillStyle = theme.get("selection") ?? "rgba(110, 170, 255, 0.28)";
+                    ctx.fillRect(selX, boxY + 2, selW, boxH - 4);
+                }
+
+                // Filename text
+                ctx.fillStyle = theme.get("foreground") ?? "#ffffff";
+                ctx.fillText(text, textX - renameDoc.scrollX, h / 2 + 1);
+
+                // Caret at exact cursor column
+                if (caretVisible) {
+                    const cx = textX + renameDoc.cursor.col * charW - renameDoc.scrollX;
+                    ctx.fillStyle = theme.get("caret") ?? "#ffffff";
+                    ctx.fillRect(cx, boxY + 3, 1.5, boxH - 6);
+                }
+
+                ctx.restore();
+            } else {
+                // Standard tab title
+                ctx.fillStyle = isActive
+                    ? (theme.get("foreground") ?? "#ffffff")
+                    : (theme.get("gutter") ?? "rgba(255, 255, 255, 0.5)");
+                const label = id.length > 14 ? id.slice(0, 13) + "…" : id;
+                ctx.fillText(label, tabX + 12, h / 2 + 1);
+            }
+
+            this.uiHitboxes.push({
+                type: "tab",
+                id,
+                x: tabX,
+                y: 0,
+                w: tabWidth,
+                h
+            });
+
+            if (canCloseTabs) {
+                const closeSize = 18;
+                const closeX = tabX + tabWidth - closeSize - 8;
+                const closeY = (h - closeSize) / 2;
+                const closeHovered =
+                    mousePos &&
+                    mousePos.x >= closeX &&
+                    mousePos.x <= closeX + closeSize &&
+                    mousePos.y >= closeY &&
+                    mousePos.y <= closeY + closeSize;
+
+                if (closeHovered) {
+                    ctx.fillStyle = "rgba(240, 113, 120, 0.25)";
+                    ctx.fillRect(closeX, closeY, closeSize, closeSize);
+                    ctx.fillStyle = "#f07178";
+                } else {
+                    ctx.fillStyle = theme.get("gutter") ?? "rgba(255, 255, 255, 0.5)";
+                }
+
+                ctx.fillText("×", closeX + 5, h / 2 + 1);
+
+                this.uiHitboxes.push({
+                    type: "close_tab",
+                    id,
+                    x: closeX,
+                    y: closeY,
+                    w: closeSize,
+                    h: closeSize
+                });
+            }
+
+            tabX += tabWidth;
+        }
+
+        // '+' New Tab button
+        const addBtnW = 36;
+        const addHovered =
+            mousePos &&
+            mousePos.y <= h &&
+            mousePos.x >= tabX &&
+            mousePos.x <= tabX + addBtnW;
+
+        if (addHovered) {
+            ctx.fillStyle = theme.get("tabHoverBg") ?? "#161f33";
+            ctx.fillRect(tabX, 0, addBtnW, h - 1);
+        }
+        ctx.fillStyle = theme.get("foreground") ?? "#ffffff";
+        ctx.fillText("+", tabX + 14, h / 2 + 1);
+
+        this.uiHitboxes.push({
+            type: "new_tab",
+            x: tabX,
+            y: 0,
+            w: addBtnW,
+            h
+        });
+
+        // '▶ Run' Button on the right side
+        const runW = 76;
+        const runH = 24;
+        const runX = w - runW - 12;
+        const runY = (h - runH) / 2;
+        const runHovered =
+            mousePos &&
+            mousePos.x >= runX &&
+            mousePos.x <= runX + runW &&
+            mousePos.y >= runY &&
+            mousePos.y <= runY + runH;
+
+        ctx.fillStyle = runHovered
+            ? (theme.get("keyword") ?? "#c792ea")
+            : (theme.get("accent") ?? "#3b82f6");
+        ctx.fillRect(runX, runY, runW, runH);
+
+        ctx.fillStyle = "#ffffff";
+        ctx.fillText("▶ Run", runX + 14, h / 2 + 1);
+
+        this.uiHitboxes.push({
+            type: "run",
+            x: runX,
+            y: runY,
+            w: runW,
+            h: runH
+        });
+
+        ctx.restore();
     }
 
     _drawMouseCursor(mousePos, theme) {
@@ -210,24 +446,27 @@ export class Renderer {
         ctx.fillStyle = color;
         ctx.lineWidth = 1.5;
 
-        if (x >= this.paddingWidth) {
-            // Draw I-Beam cursor over the text area
-            const halfH = Math.round(this.lineHeight * 0.45);
+        const overRenameBox =
+            this.renameBoxMeta &&
+            x >= this.renameBoxMeta.boxX &&
+            x <= this.renameBoxMeta.boxX + this.renameBoxMeta.boxW &&
+            y >= this.renameBoxMeta.boxY &&
+            y <= this.renameBoxMeta.boxY + this.renameBoxMeta.boxH;
+
+        if ((y > this.topBarHeight && x >= this.paddingWidth) || overRenameBox) {
+            const halfH = overRenameBox ? 7 : Math.round(this.lineHeight * 0.45);
             const serifW = 3;
 
             ctx.beginPath();
-            // Vertical stem
             ctx.moveTo(x, y - halfH);
             ctx.lineTo(x, y + halfH);
-            // Top crossbar
             ctx.moveTo(x - serifW, y - halfH);
             ctx.lineTo(x + serifW, y - halfH);
-            // Bottom crossbar
             ctx.moveTo(x - serifW, y + halfH);
             ctx.lineTo(x + serifW, y + halfH);
             ctx.stroke();
         } else {
-            // Draw a clean arrow cursor when hovering over the gutter
+            // Draw Pointer Arrow over the Top Bar and Gutter
             ctx.beginPath();
             ctx.moveTo(x, y);
             ctx.lineTo(x, y + 14);

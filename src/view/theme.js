@@ -14,6 +14,11 @@ export class Theme {
     static midnight() {
         return new Map([
             ["background", "#0b0f19"],
+            ["topbarBg", "#060911"],
+            ["tabActiveBg", "#0b0f19"],
+            ["tabHoverBg", "#161f33"],
+            ["border", "rgba(230, 237, 243, 0.12)"],
+            ["accent", "#3b82f6"],
             ["foreground", "#e6edf3"],
             ["gutter", "rgba(230, 237, 243, 0.45)"],
             ["selection", "rgba(110, 170, 255, 0.28)"],
@@ -32,6 +37,11 @@ export class Theme {
     static nord() {
         return new Map([
             ["background", "#2e3440"],
+            ["topbarBg", "#242933"],
+            ["tabActiveBg", "#2e3440"],
+            ["tabHoverBg", "#3b4252"],
+            ["border", "rgba(236, 239, 244, 0.12)"],
+            ["accent", "#88c0d0"],
             ["foreground", "#eceff4"],
             ["gutter", "rgba(236, 239, 244, 0.50)"],
             ["selection", "rgba(136, 192, 208, 0.25)"],
@@ -50,6 +60,11 @@ export class Theme {
     static solarizedDark() {
         return new Map([
             ["background", "#002b36"],
+            ["topbarBg", "#001f27"],
+            ["tabActiveBg", "#002b36"],
+            ["tabHoverBg", "#073642"],
+            ["border", "rgba(238, 232, 213, 0.15)"],
+            ["accent", "#2aa198"],
             ["foreground", "#eee8d5"],
             ["gutter", "rgba(238, 232, 213, 0.45)"],
             ["selection", "rgba(38, 139, 210, 0.25)"],
