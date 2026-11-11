@@ -1,12 +1,8 @@
-import { Editor } from "../editor.js";
 import { Highlighter } from "./base.js";
 
 export class JsHighlighter extends Highlighter {
-    /**
-     * @param {Editor} editor
-     */
-    constructor(editor) {
-        super(editor);
+    constructor(doc) {
+        super(doc);
         this.keywords = new Set([
             "var", "let", "const", "function", "class",
             "if", "else", "switch", "case", "default",
@@ -15,133 +11,140 @@ export class JsHighlighter extends Highlighter {
             "import", "export", "from", "as",
             "new", "this", "super", "extends",
             "return", "yield", "await", "async",
-            "typeof", "instanceof", "in",
+            "typeof", "instanceof", "in", "of",
             "delete", "void", "debugger", "with",
-            "enum",
-            "implements", "interface", "package",
+            "enum", "implements", "interface", "package",
             "private", "protected", "public",
-            "eval", "arguments",
-            "get", "set", "static"
+            "eval", "arguments", "get", "set", "static"
         ]);
-
         this.literals = new Set([
-            "true", "false",
-            "null", "undefined",
-            "NaN", "Infinity"
+            "true", "false", "null", "undefined", "NaN", "Infinity"
         ]);
-
-        this._stringChar = ['"', "'", "`"];
+        this._stringChars = new Set(['"', "'", "`"]);
     }
 
-    tokenize(line) {
-        let tokens = [];
+    tokenize(lineIdx) {
+        const tokens = [];
         let i = 0;
-
-        let lastState = "normal";
-        if (line > 0) {
-            lastState = this.editor._lineAt(line - 1).lastState;
-        }
-        const s = this.editor._lineAt(line).content;
+        let state = lineIdx > 0 ? this.doc.lineAt(lineIdx - 1).lastState : "normal";
+        const s = this.doc.lineAt(lineIdx).content;
 
         while (i < s.length) {
-            const char = s[i];
-
-            if (lastState == "normal" && /\s/.test(char)) {
-                let value = "";
-                while (i < s.length && /\s/.test(s[i])) {
-                    value += s[i++];
+            // Continuing a multiline block comment
+            if (state === "comment") {
+                const closeIdx = s.indexOf("*/", i);
+                if (closeIdx !== -1) {
+                    tokens.push({ val: s.slice(i, closeIdx + 2), type: "comment" });
+                    i = closeIdx + 2;
+                    state = "normal";
+                } else {
+                    tokens.push({ val: s.slice(i), type: "comment" });
+                    break;
                 }
-                tokens.push({ val: value, type: 'default' });
                 continue;
             }
 
-            if (lastState == "normal" && char == '/' && s[i + 1] == '/') {
-                tokens.push({ val: s.substring(i), type: 'comment' });
+            // Continuing a multiline template literal (`...`)
+            if (state === "string") {
+                let value = "";
+                let closed = false;
+                while (i < s.length) {
+                    if (s[i] === "\\" && i + 1 < s.length) {
+                        value += s[i++] + s[i++];
+                    } else if (s[i] === "`") {
+                        value += s[i++];
+                        closed = true;
+                        state = "normal";
+                        break;
+                    } else {
+                        value += s[i++];
+                    }
+                }
+                tokens.push({ val: value, type: "string" });
+                if (!closed) break;
+                continue;
+            }
+
+            const char = s[i];
+
+            // Whitespace
+            if (/\s/.test(char)) {
+                let start = i;
+                while (i < s.length && /\s/.test(s[i])) i++;
+                tokens.push({ val: s.slice(start, i), type: "default" });
+                continue;
+            }
+
+            // Single-line comment
+            if (char === "/" && s[i + 1] === "/") {
+                tokens.push({ val: s.slice(i), type: "comment" });
                 break;
             }
 
-            if (lastState == "normal" && char == '/' && s[i + 1] == '*') {
-                let value = "/*";
-                i += 2;
-                while (i < s.length && (s[i - 1] != "*" || s[i] != "/")) {
-                    value += s[i++];
-                }
-                if (i < s.length && s[i - 1] == "*" && s[i] == "/") {
-                    value += "/";
-                    i++;
+            // Multiline comment start
+            if (char === "/" && s[i + 1] === "*") {
+                const closeIdx = s.indexOf("*/", i + 2);
+                if (closeIdx !== -1) {
+                    tokens.push({ val: s.slice(i, closeIdx + 2), type: "comment" });
+                    i = closeIdx + 2;
                 } else {
-                    lastState = "comment";
+                    tokens.push({ val: s.slice(i), type: "comment" });
+                    state = "comment";
+                    break;
                 }
-                tokens.push({ val: value, type: 'comment' });
                 continue;
             }
 
-            if (lastState == "comment" && char == '*' && s[i + 1] == '/') {
-                lastState = "normal";
-                i += 2;
-                tokens.push({ val: s.substring(0, i), type: "comment" });
-                continue;
-            }
-
-            if (lastState == "normal" && this._stringChar.includes(char)) {
-                const searchFor = char;
-                let value = char;
+            // Strings & Template literals
+            if (this._stringChars.has(char)) {
+                const quote = char;
+                let value = quote;
+                let closed = false;
                 i++;
-                while (i < s.length && s[i] != searchFor) {
-                    value += s[i++];
+                while (i < s.length) {
+                    if (s[i] === "\\" && i + 1 < s.length) {
+                        value += s[i++] + s[i++];
+                    } else if (s[i] === quote) {
+                        value += s[i++];
+                        closed = true;
+                        break;
+                    } else {
+                        value += s[i++];
+                    }
                 }
-                if (i < s.length && s[i] == searchFor) {
-                    value += searchFor;
-                    i++;
+                if (!closed && quote === "`") {
+                    state = "string";
                 }
-                if (i >= s.length && searchFor == '`') {
-                    lastState = "string";
-                }
-                tokens.push({ val: value, type: 'string' });
+                tokens.push({ val: value, type: "string" });
                 continue;
             }
 
-            if (lastState == "string" && char == '`') {
-                lastState = "normal";
-                i++;
-                tokens.push({ val: s.substring(0, i), type: "string" });
+            // Numbers
+            if (/[0-9]/.test(char)) {
+                let start = i;
+                while (i < s.length && /[0-9a-fA-FxX._n]/.test(s[i])) i++;
+                tokens.push({ val: s.slice(start, i), type: "literal" });
                 continue;
             }
 
-            if (lastState == "normal" && /[0-9]/.test(char)) {
-                let value = "";
-                while (i < s.length && /[0-9]/.test(s[i])) {
-                    value += s[i++];
-                }
-                tokens.push({ val: value, type: 'literal' });
+            // Identifiers & Keywords
+            if (/[a-zA-Z_$]/.test(char)) {
+                let start = i;
+                while (i < s.length && /[a-zA-Z0-9_$]/.test(s[i])) i++;
+                const word = s.slice(start, i);
+                let type = "identifier";
+                if (this.keywords.has(word)) type = "keyword";
+                else if (this.literals.has(word)) type = "literal";
+                tokens.push({ val: word, type });
                 continue;
             }
 
-            if (lastState == "normal" && /[a-zA-Z_]/.test(char)) {
-                let value = "";
-                while (i < s.length && /[a-zA-Z0-9_]/.test(s[i])) {
-                    value += s[i++];
-                }
-                let type = 'identifier';
-                if (this.keywords.has(value)) {
-                    type = 'keyword';
-                } else if (this.literals.has(value)) {
-                    type = 'literal';
-                }
-
-                tokens.push({ val: value, type: type });
-                continue;
-            }
-
-            if (lastState == "normal") {
-                tokens.push({ val: char, type: 'operator' });
-            }
+            // Operators
+            tokens.push({ val: char, type: "operator" });
             i++;
         }
-        this.editor._lineAt(line).lastState = lastState;
-        if (tokens.length == 0) {
-            tokens.push({ val: this.editor._lineAt(line).content, type: lastState });
-        }
+
+        this.doc.lineAt(lineIdx).lastState = state;
         return tokens;
     }
 }
