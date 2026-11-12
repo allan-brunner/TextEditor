@@ -102,6 +102,8 @@ export class TextDocument {
                 lang = "C";
             } else if (ext === "JS" || ext === "MJS") {
                 lang = "JS";
+            } else if (ext === "JSON") {
+                lang = "JSON";
             } else {
                 lang = ext;
             }
